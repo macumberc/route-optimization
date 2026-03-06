@@ -3,14 +3,14 @@
 import requests
 
 
-def cleanup(spark, dbutils=None, catalog=None, schema="demo", genie_space_id=None, app_name=None):
+def cleanup(spark, dbutils=None, catalog="genie_demos", schema="demo", genie_space_id=None, app_name=None):
     """
     Remove all NorthStar Route Optimization demo assets.
 
     Args:
         spark: SparkSession
         dbutils: DBUtils (optional, needed for Genie/App cleanup)
-        catalog: Catalog name to clean up. Defaults to current username.
+        catalog: Catalog name to clean up. Defaults to "genie_demos".
         schema: Schema name. Defaults to "demo".
         genie_space_id: Genie space ID to delete. If None, skips.
         app_name: App name to delete. If None, skips.

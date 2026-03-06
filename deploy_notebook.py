@@ -14,7 +14,7 @@
 # COMMAND ----------
 
 # Widget setup
-dbutils.widgets.text("catalog_name", spark.sql("SELECT current_user()").first()[0].split("@")[0].replace(".", "_"), "Catalog Name")
+dbutils.widgets.text("catalog_name", "genie_demos", "Catalog Name")
 dbutils.widgets.text("schema_name", "demo", "Schema Name")
 dbutils.widgets.text("warehouse_id", "", "SQL Warehouse ID (for Genie)")
 dbutils.widgets.text("deploy_app", "false", "Deploy App (true/false)")

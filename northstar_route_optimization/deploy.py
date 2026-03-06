@@ -9,17 +9,64 @@ def _gen_id(name):
     return hashlib.md5(f"northstar_{name}".encode()).hexdigest()
 
 
-def deploy(spark, dbutils=None, catalog=None, schema="demo", warehouse_id=None, deploy_app=False):
+def _table_exists(spark, catalog, schema, table):
+    try:
+        cnt = spark.sql(f"SELECT COUNT(*) FROM `{catalog}`.`{schema}`.`{table}`").first()[0]
+        return cnt > 0
+    except Exception:
+        return False
+
+
+def _genie_space_exists(workspace_url, headers, title_prefix="NorthStar"):
+    try:
+        resp = requests.get(f"{workspace_url}/api/2.0/genie/spaces", headers=headers)
+        if resp.status_code == 200:
+            all_spaces = []
+            data = resp.json()
+            all_spaces.extend(data.get("spaces", []))
+            while data.get("next_page_token"):
+                resp = requests.get(
+                    f"{workspace_url}/api/2.0/genie/spaces",
+                    headers=headers,
+                    params={"page_token": data["next_page_token"]},
+                )
+                data = resp.json()
+                all_spaces.extend(data.get("spaces", []))
+            for s in all_spaces:
+                if title_prefix.lower() in s.get("title", "").lower():
+                    return s.get("space_id")
+        return None
+    except Exception:
+        return None
+
+
+def _app_exists(workspace_url, headers, app_name):
+    try:
+        resp = requests.get(f"{workspace_url}/api/2.0/apps/{app_name}", headers=headers)
+        if resp.status_code == 200:
+            return resp.json().get("url")
+        return None
+    except Exception:
+        return None
+
+
+def deploy(spark, dbutils=None, catalog="genie_demos", schema="demo",
+           warehouse_id=None, deploy_app=False, overwrite=False):
     """
     Deploy the NorthStar Logistics 3PL Route Optimization demo.
+
+    Checks whether tables, Genie space, and app already exist before
+    creating them. Skips any component that is already deployed unless
+    overwrite=True.
 
     Args:
         spark: SparkSession (required, available in Databricks notebooks)
         dbutils: DBUtils instance (optional, needed for Genie space creation)
-        catalog: Catalog name. Defaults to current username.
+        catalog: Catalog name. Defaults to "genie_demos".
         schema: Schema name. Defaults to "demo".
         warehouse_id: SQL warehouse ID. If provided, creates a Genie space.
         deploy_app: If True, attempts to deploy the Databricks App.
+        overwrite: If True, drops and recreates tables/Genie even if they exist.
 
     Returns:
         dict with keys: catalog, schema, tables, genie_space_id, genie_url, app_url
@@ -33,26 +80,17 @@ def deploy(spark, dbutils=None, catalog=None, schema="demo", warehouse_id=None, 
         "app_url": None,
     }
 
-    # ------------------------------------------------------------------ #
-    # 1. Derive catalog name from current user if not provided
-    # ------------------------------------------------------------------ #
-    if catalog is None:
-        catalog = (
-            spark.sql("SELECT current_user()")
-            .first()[0]
-            .split("@")[0]
-            .replace(".", "_")
-        )
-    result["catalog"] = catalog
-
     CATALOG = catalog
     SCHEMA = schema
+    result["catalog"] = CATALOG
 
-    print(f"Catalog: {CATALOG}")
-    print(f"Schema:  {SCHEMA}")
+    print(f"Catalog:   {CATALOG}")
+    print(f"Schema:    {SCHEMA}")
+    print(f"Overwrite: {overwrite}")
+    print()
 
     # ------------------------------------------------------------------ #
-    # 2. Create Catalog & Schema
+    # 1. Create Catalog & Schema
     # ------------------------------------------------------------------ #
     try:
         spark.sql(f"CREATE CATALOG IF NOT EXISTS `{CATALOG}`")
@@ -69,11 +107,15 @@ def deploy(spark, dbutils=None, catalog=None, schema="demo", warehouse_id=None, 
     print(f"✓ Schema `{CATALOG}`.`{SCHEMA}` ready")
 
     # ------------------------------------------------------------------ #
-    # 3. Create `vehicles` table (40 rows)
+    # 2. Create `vehicles` table (40 rows)
     # ------------------------------------------------------------------ #
-    spark.sql(f"DROP TABLE IF EXISTS `{CATALOG}`.`{SCHEMA}`.vehicles")
+    if _table_exists(spark, CATALOG, SCHEMA, "vehicles") and not overwrite:
+        print("⏭ vehicles already exists (skipping)")
+        result["tables"].append("vehicles")
+    else:
+        spark.sql(f"DROP TABLE IF EXISTS `{CATALOG}`.`{SCHEMA}`.vehicles")
 
-    spark.sql(f"""
+        spark.sql(f"""
 CREATE TABLE `{CATALOG}`.`{SCHEMA}`.vehicles AS
 WITH vehicle_defs AS (
   SELECT EXPLODE(ARRAY(
@@ -131,16 +173,20 @@ SELECT
 FROM filtered
 """)
 
-    cnt = spark.sql(f"SELECT COUNT(*) FROM `{CATALOG}`.`{SCHEMA}`.vehicles").first()[0]
-    print(f"✓ vehicles: {cnt} rows")
-    result["tables"].append("vehicles")
+        cnt = spark.sql(f"SELECT COUNT(*) FROM `{CATALOG}`.`{SCHEMA}`.vehicles").first()[0]
+        print(f"✓ vehicles: {cnt} rows")
+        result["tables"].append("vehicles")
 
     # ------------------------------------------------------------------ #
-    # 4. Create `delivery_orders` table (~25k rows)
+    # 3. Create `delivery_orders` table (~25k rows)
     # ------------------------------------------------------------------ #
-    spark.sql(f"DROP TABLE IF EXISTS `{CATALOG}`.`{SCHEMA}`.delivery_orders")
+    if _table_exists(spark, CATALOG, SCHEMA, "delivery_orders") and not overwrite:
+        print("⏭ delivery_orders already exists (skipping)")
+        result["tables"].append("delivery_orders")
+    else:
+        spark.sql(f"DROP TABLE IF EXISTS `{CATALOG}`.`{SCHEMA}`.delivery_orders")
 
-    spark.sql(f"""
+        spark.sql(f"""
 CREATE TABLE `{CATALOG}`.`{SCHEMA}`.delivery_orders AS
 WITH date_range AS (
   SELECT EXPLODE(SEQUENCE(DATE'2025-01-01', DATE'2025-12-31', INTERVAL 1 DAY)) AS order_date
@@ -273,16 +319,20 @@ SELECT
 FROM accepted
 """)
 
-    cnt = spark.sql(f"SELECT COUNT(*) FROM `{CATALOG}`.`{SCHEMA}`.delivery_orders").first()[0]
-    print(f"✓ delivery_orders: {cnt} rows")
-    result["tables"].append("delivery_orders")
+        cnt = spark.sql(f"SELECT COUNT(*) FROM `{CATALOG}`.`{SCHEMA}`.delivery_orders").first()[0]
+        print(f"✓ delivery_orders: {cnt} rows")
+        result["tables"].append("delivery_orders")
 
     # ------------------------------------------------------------------ #
-    # 5. Create `route_plans` table (~6k rows)
+    # 4. Create `route_plans` table (~6k rows)
     # ------------------------------------------------------------------ #
-    spark.sql(f"DROP TABLE IF EXISTS `{CATALOG}`.`{SCHEMA}`.route_plans")
+    if _table_exists(spark, CATALOG, SCHEMA, "route_plans") and not overwrite:
+        print("⏭ route_plans already exists (skipping)")
+        result["tables"].append("route_plans")
+    else:
+        spark.sql(f"DROP TABLE IF EXISTS `{CATALOG}`.`{SCHEMA}`.route_plans")
 
-    spark.sql(f"""
+        spark.sql(f"""
 CREATE TABLE `{CATALOG}`.`{SCHEMA}`.route_plans AS
 WITH date_range AS (
   SELECT EXPLODE(SEQUENCE(DATE'2025-01-01', DATE'2025-12-31', INTERVAL 1 DAY)) AS route_date
@@ -403,16 +453,20 @@ SELECT
 FROM with_stops_miles
 """)
 
-    cnt = spark.sql(f"SELECT COUNT(*) FROM `{CATALOG}`.`{SCHEMA}`.route_plans").first()[0]
-    print(f"✓ route_plans: {cnt} rows")
-    result["tables"].append("route_plans")
+        cnt = spark.sql(f"SELECT COUNT(*) FROM `{CATALOG}`.`{SCHEMA}`.route_plans").first()[0]
+        print(f"✓ route_plans: {cnt} rows")
+        result["tables"].append("route_plans")
 
     # ------------------------------------------------------------------ #
-    # 6. Create `route_stops` table
+    # 5. Create `route_stops` table
     # ------------------------------------------------------------------ #
-    spark.sql(f"DROP TABLE IF EXISTS `{CATALOG}`.`{SCHEMA}`.route_stops")
+    if _table_exists(spark, CATALOG, SCHEMA, "route_stops") and not overwrite:
+        print("⏭ route_stops already exists (skipping)")
+        result["tables"].append("route_stops")
+    else:
+        spark.sql(f"DROP TABLE IF EXISTS `{CATALOG}`.`{SCHEMA}`.route_stops")
 
-    spark.sql(f"""
+        spark.sql(f"""
 CREATE TABLE `{CATALOG}`.`{SCHEMA}`.route_stops AS
 WITH stop_expanded AS (
   SELECT
@@ -521,12 +575,12 @@ SELECT
 FROM joined
 """)
 
-    cnt = spark.sql(f"SELECT COUNT(*) FROM `{CATALOG}`.`{SCHEMA}`.route_stops").first()[0]
-    print(f"✓ route_stops: {cnt} rows")
-    result["tables"].append("route_stops")
+        cnt = spark.sql(f"SELECT COUNT(*) FROM `{CATALOG}`.`{SCHEMA}`.route_stops").first()[0]
+        print(f"✓ route_stops: {cnt} rows")
+        result["tables"].append("route_stops")
 
     # ------------------------------------------------------------------ #
-    # 7. Add Column Comments
+    # 6. Add Column Comments (always runs -- idempotent)
     # ------------------------------------------------------------------ #
     column_comments = {
         "vehicles": {
@@ -630,7 +684,7 @@ SELECT
     print("=" * 60)
 
     # ------------------------------------------------------------------ #
-    # 9. Create Genie Space (conditional)
+    # 8. Create Genie Space (conditional)
     # ------------------------------------------------------------------ #
     if warehouse_id and dbutils:
         workspace_url = f"https://{spark.conf.get('spark.databricks.workspaceUrl')}"
@@ -640,12 +694,24 @@ SELECT
             "Content-Type": "application/json",
         }
 
-        do_table = f"{CATALOG}.{SCHEMA}.delivery_orders"
-        rp_table = f"{CATALOG}.{SCHEMA}.route_plans"
-        rs_table = f"{CATALOG}.{SCHEMA}.route_stops"
-        v_table  = f"{CATALOG}.{SCHEMA}.vehicles"
+        existing_genie = _genie_space_exists(workspace_url, headers, "NorthStar")
+        create_genie = True
+        if existing_genie and not overwrite:
+            print(f"⏭ Genie space already exists: {existing_genie}")
+            result["genie_space_id"] = existing_genie
+            result["genie_url"] = f"{workspace_url}/genie/rooms/{existing_genie}"
+            create_genie = False
+        elif existing_genie and overwrite:
+            print(f"♻ Deleting existing Genie space {existing_genie}...")
+            requests.delete(f"{workspace_url}/api/2.0/genie/spaces/{existing_genie}", headers=headers)
 
-        serialized_space = {
+        if create_genie:
+            do_table = f"{CATALOG}.{SCHEMA}.delivery_orders"
+            rp_table = f"{CATALOG}.{SCHEMA}.route_plans"
+            rs_table = f"{CATALOG}.{SCHEMA}.route_stops"
+            v_table  = f"{CATALOG}.{SCHEMA}.vehicles"
+
+            serialized_space = {
             "version": 2,
             "config": {
                 "sample_questions": sorted([
@@ -668,123 +734,124 @@ SELECT
             },
         }
 
-        payload = {
-            "warehouse_id": warehouse_id,
-            "serialized_space": json.dumps(serialized_space),
-            "title": "NorthStar Logistics - 3PL Route Optimization",
-            "description": (
-                "Analyze delivery performance, route efficiency, fleet utilization, "
-                "and cost optimization for NorthStar Logistics multi-client 3PL "
-                "operation across 8 US metro depots."
-            ),
-        }
-
-        print("Creating Genie space...")
-        resp = requests.post(f"{workspace_url}/api/2.0/genie/spaces", headers=headers, json=payload)
-
-        if resp.status_code in (200, 201):
-            genie_result = resp.json()
-            genie_space_id = genie_result.get("space_id", genie_result.get("id"))
-            result["genie_space_id"] = genie_space_id
-            result["genie_url"] = f"{workspace_url}/genie/rooms/{genie_space_id}"
-            print(f"✓ Genie space created: {genie_space_id}")
-
-            general_instructions = (
-                "You are a data analyst for NorthStar Logistics, a third-party logistics (3PL) company "
-                "operating last-mile and regional delivery services for multiple clients across 8 US metro "
-                "depots (Atlanta, Chicago, Dallas, Denver, Los Angeles, New York, Phoenix, Seattle).\n\n"
-                "You help route planners and logistics operations managers analyze delivery performance, "
-                "route efficiency, fleet utilization, and cost optimization.\n\n"
-                "Key Metrics:\n"
-                "- On-Time Delivery Rate = (stops with delay_minutes = 0 / total completed stops) x 100. Target: 95%+\n"
-                "- Cost Per Delivery = actual_cost_usd / planned_stops from route_plans. Lower is better.\n"
-                "- Miles Per Stop = actual_miles / planned_stops from route_plans. Lower = denser routing.\n"
-                "- Vehicle Utilization = routes per vehicle over time.\n"
-                "- Route Efficiency = planned_miles / actual_miles. Closer to 1.0 = less waste.\n"
-                "- Late Delivery Rate = (stops with delay_minutes > 0 / total) x 100.\n\n"
-                "Table relationships:\n"
-                "- delivery_orders.order_id = route_stops.order_id\n"
-                "- route_plans.route_id = route_stops.route_id\n"
-                "- route_plans.vehicle_id = vehicles.vehicle_id\n"
-                "- route_plans.depot_id matches delivery_orders.depot_id and vehicles.depot_id\n\n"
-                "Optimization methods (route_plans.optimization_method):\n"
-                "- greedy_nearest: nearest-neighbor heuristic\n"
-                "- or_tools_cvrp: Google OR-Tools CVRP solver (best efficiency)\n"
-                "- manual_dispatch: dispatcher-assigned (most variance)\n\n"
-                "Data characteristics:\n"
-                "- Seasonal patterns: Q4 holiday surge (Nov/Dec), back-to-school (Aug), Jan dip, summer lull (Jun/Jul)\n"
-                "- Day-of-week effects: Mon-Fri heavy, Sat light, Sun minimal\n"
-                "- Pareto distribution: NYC, LAX, CHI depots handle ~50% of volume\n"
-                "- Clients: CLIENT_A (35%), CLIENT_B (25%), CLIENT_C (20%), CLIENT_D (12%), CLIENT_E (8%)"
-            )
-
-            update_ss = json.loads(genie_result.get("serialized_space", "{}"))
-            if not update_ss:
-                update_ss = serialized_space.copy()
-
-            update_ss["instructions"] = {
-                "text_instructions": [
-                    {
-                        "id": _gen_id("instr1"),
-                        "content": [general_instructions],
-                    }
-                ],
-                "example_question_sqls": sorted([
-                    {
-                        "id": _gen_id("eq1"),
-                        "question": ["Cost per delivery by depot"],
-                        "sql": [f"SELECT depot_id, ROUND(AVG(actual_cost_usd / planned_stops), 2) AS avg_cost_per_delivery FROM {rp_table} GROUP BY depot_id ORDER BY avg_cost_per_delivery DESC"],
-                    },
-                    {
-                        "id": _gen_id("eq2"),
-                        "question": ["On-time rate trend by week"],
-                        "sql": [f"SELECT DATE_TRUNC('week', planned_arrival) AS week, ROUND(SUM(CASE WHEN delay_minutes = 0 THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 1) AS on_time_rate FROM {rs_table} WHERE status = 'completed' GROUP BY 1 ORDER BY 1"],
-                    },
-                    {
-                        "id": _gen_id("eq3"),
-                        "question": ["Delay reasons by region"],
-                        "sql": [f"SELECT do.service_region, rs.delay_reason, COUNT(*) AS cnt FROM {rs_table} rs JOIN {rp_table} rp ON rs.route_id = rp.route_id JOIN {do_table} do ON rs.order_id = do.order_id WHERE rs.delay_reason IS NOT NULL GROUP BY 1, 2 ORDER BY cnt DESC"],
-                    },
-                    {
-                        "id": _gen_id("eq4"),
-                        "question": ["Vehicle type utilization"],
-                        "sql": [f"SELECT v.vehicle_type, COUNT(DISTINCT rp.route_id) AS routes, ROUND(AVG(rp.actual_miles),1) AS avg_miles FROM {v_table} v JOIN {rp_table} rp ON v.vehicle_id = rp.vehicle_id GROUP BY 1"],
-                    },
-                    {
-                        "id": _gen_id("eq5"),
-                        "question": ["Planned vs actual by optimization method"],
-                        "sql": [f"SELECT optimization_method, ROUND(AVG(planned_miles),1) AS avg_planned, ROUND(AVG(actual_miles),1) AS avg_actual, ROUND(AVG(actual_cost_usd/planned_stops),2) AS cost_per_stop FROM {rp_table} GROUP BY 1 ORDER BY cost_per_stop"],
-                    },
-                ], key=lambda x: x["id"]),
-            }
-
-            update_payload = {
+            payload = {
                 "warehouse_id": warehouse_id,
-                "serialized_space": json.dumps(update_ss),
-                "title": payload["title"],
-                "description": payload["description"],
+                "serialized_space": json.dumps(serialized_space),
+                "title": "NorthStar Logistics - 3PL Route Optimization",
+                "description": (
+                    "Analyze delivery performance, route efficiency, fleet utilization, "
+                    "and cost optimization for NorthStar Logistics multi-client 3PL "
+                    "operation across 8 US metro depots."
+                ),
             }
 
-            resp2 = requests.patch(
-                f"{workspace_url}/api/2.0/genie/spaces/{genie_space_id}",
-                headers=headers,
-                json=update_payload,
-            )
-            if resp2.status_code in (200, 201):
-                print("✓ Instructions and example SQLs added")
+            print("Creating Genie space...")
+            resp = requests.post(f"{workspace_url}/api/2.0/genie/spaces", headers=headers, json=payload)
+
+            if resp.status_code in (200, 201):
+                genie_result = resp.json()
+                genie_space_id = genie_result.get("space_id", genie_result.get("id"))
+                result["genie_space_id"] = genie_space_id
+                result["genie_url"] = f"{workspace_url}/genie/rooms/{genie_space_id}"
+                print(f"✓ Genie space created: {genie_space_id}")
+
+                general_instructions = (
+                    "You are a data analyst for NorthStar Logistics, a third-party logistics (3PL) company "
+                    "operating last-mile and regional delivery services for multiple clients across 8 US metro "
+                    "depots (Atlanta, Chicago, Dallas, Denver, Los Angeles, New York, Phoenix, Seattle).\n\n"
+                    "You help route planners and logistics operations managers analyze delivery performance, "
+                    "route efficiency, fleet utilization, and cost optimization.\n\n"
+                    "Key Metrics:\n"
+                    "- On-Time Delivery Rate = (stops with delay_minutes = 0 / total completed stops) x 100. Target: 95%+\n"
+                    "- Cost Per Delivery = actual_cost_usd / planned_stops from route_plans. Lower is better.\n"
+                    "- Miles Per Stop = actual_miles / planned_stops from route_plans. Lower = denser routing.\n"
+                    "- Vehicle Utilization = routes per vehicle over time.\n"
+                    "- Route Efficiency = planned_miles / actual_miles. Closer to 1.0 = less waste.\n"
+                    "- Late Delivery Rate = (stops with delay_minutes > 0 / total) x 100.\n\n"
+                    "Table relationships:\n"
+                    "- delivery_orders.order_id = route_stops.order_id\n"
+                    "- route_plans.route_id = route_stops.route_id\n"
+                    "- route_plans.vehicle_id = vehicles.vehicle_id\n"
+                    "- route_plans.depot_id matches delivery_orders.depot_id and vehicles.depot_id\n\n"
+                    "Optimization methods (route_plans.optimization_method):\n"
+                    "- greedy_nearest: nearest-neighbor heuristic\n"
+                    "- or_tools_cvrp: Google OR-Tools CVRP solver (best efficiency)\n"
+                    "- manual_dispatch: dispatcher-assigned (most variance)\n\n"
+                    "Data characteristics:\n"
+                    "- Seasonal patterns: Q4 holiday surge (Nov/Dec), back-to-school (Aug), Jan dip, summer lull (Jun/Jul)\n"
+                    "- Day-of-week effects: Mon-Fri heavy, Sat light, Sun minimal\n"
+                    "- Pareto distribution: NYC, LAX, CHI depots handle ~50% of volume\n"
+                    "- Clients: CLIENT_A (35%), CLIENT_B (25%), CLIENT_C (20%), CLIENT_D (12%), CLIENT_E (8%)"
+                )
+
+                update_ss = json.loads(genie_result.get("serialized_space", "{}"))
+                if not update_ss:
+                    update_ss = serialized_space.copy()
+
+                update_ss["instructions"] = {
+                    "text_instructions": [
+                        {
+                            "id": _gen_id("instr1"),
+                            "content": [general_instructions],
+                        }
+                    ],
+                    "example_question_sqls": sorted([
+                        {
+                            "id": _gen_id("eq1"),
+                            "question": ["Cost per delivery by depot"],
+                            "sql": [f"SELECT depot_id, ROUND(AVG(actual_cost_usd / planned_stops), 2) AS avg_cost_per_delivery FROM {rp_table} GROUP BY depot_id ORDER BY avg_cost_per_delivery DESC"],
+                        },
+                        {
+                            "id": _gen_id("eq2"),
+                            "question": ["On-time rate trend by week"],
+                            "sql": [f"SELECT DATE_TRUNC('week', planned_arrival) AS week, ROUND(SUM(CASE WHEN delay_minutes = 0 THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 1) AS on_time_rate FROM {rs_table} WHERE status = 'completed' GROUP BY 1 ORDER BY 1"],
+                        },
+                        {
+                            "id": _gen_id("eq3"),
+                            "question": ["Delay reasons by region"],
+                            "sql": [f"SELECT do.service_region, rs.delay_reason, COUNT(*) AS cnt FROM {rs_table} rs JOIN {rp_table} rp ON rs.route_id = rp.route_id JOIN {do_table} do ON rs.order_id = do.order_id WHERE rs.delay_reason IS NOT NULL GROUP BY 1, 2 ORDER BY cnt DESC"],
+                        },
+                        {
+                            "id": _gen_id("eq4"),
+                            "question": ["Vehicle type utilization"],
+                            "sql": [f"SELECT v.vehicle_type, COUNT(DISTINCT rp.route_id) AS routes, ROUND(AVG(rp.actual_miles),1) AS avg_miles FROM {v_table} v JOIN {rp_table} rp ON v.vehicle_id = rp.vehicle_id GROUP BY 1"],
+                        },
+                        {
+                            "id": _gen_id("eq5"),
+                            "question": ["Planned vs actual by optimization method"],
+                            "sql": [f"SELECT optimization_method, ROUND(AVG(planned_miles),1) AS avg_planned, ROUND(AVG(actual_miles),1) AS avg_actual, ROUND(AVG(actual_cost_usd/planned_stops),2) AS cost_per_stop FROM {rp_table} GROUP BY 1 ORDER BY cost_per_stop"],
+                        },
+                    ], key=lambda x: x["id"]),
+                }
+
+                update_payload = {
+                    "warehouse_id": warehouse_id,
+                    "serialized_space": json.dumps(update_ss),
+                    "title": payload["title"],
+                    "description": payload["description"],
+                }
+
+                resp2 = requests.patch(
+                    f"{workspace_url}/api/2.0/genie/spaces/{genie_space_id}",
+                    headers=headers,
+                    json=update_payload,
+                )
+                if resp2.status_code in (200, 201):
+                    print("✓ Instructions and example SQLs added")
+                else:
+                    print(f"⚠ Instruction update returned {resp2.status_code}: {resp2.text[:500]}")
             else:
-                print(f"⚠ Instruction update returned {resp2.status_code}: {resp2.text[:500]}")
-        else:
-            print(f"✗ Genie space creation failed: {resp.status_code}")
-            print(resp.text[:1000])
+                print(f"✗ Genie space creation failed: {resp.status_code}")
+                print(resp.text[:1000])
     elif warehouse_id and not dbutils:
         print("⚠ warehouse_id provided but dbutils is None — cannot create Genie space")
     else:
         print("⏭ Skipping Genie space creation (no warehouse_id provided)")
 
     # ------------------------------------------------------------------ #
-    # 10. Deploy App (conditional)
+    # 9. Deploy App (conditional)
     # ------------------------------------------------------------------ #
+    APP_NAME = "northstar-route-optimization"
     if deploy_app:
         if not dbutils:
             print("⚠ deploy_app=True but dbutils is None — cannot deploy app")
@@ -792,30 +859,35 @@ SELECT
             try:
                 workspace_url = f"https://{spark.conf.get('spark.databricks.workspaceUrl')}"
                 token = dbutils.notebook.entry_point.getDbutils().notebook().getContext().apiToken().get()
-
                 deploy_headers = {
                     "Authorization": f"Bearer {token}",
                     "Content-Type": "application/json",
                 }
 
-                app_payload = {
-                    "name": "northstar-route-optimization",
-                    "description": "NorthStar Logistics 3PL Route Optimization Dashboard",
-                }
-
-                resp = requests.post(f"{workspace_url}/api/2.0/apps", headers=deploy_headers, json=app_payload)
-                if resp.status_code in (200, 201):
-                    app_info = resp.json()
-                    app_url = app_info.get("url", f"{workspace_url}/apps/northstar-route-optimization")
-                    result["app_url"] = app_url
-                    print(f"✓ App created: {app_info.get('name', 'northstar-route-optimization')}")
-                    print(f"  URL: {app_url}")
+                existing_app = _app_exists(workspace_url, deploy_headers, APP_NAME)
+                if existing_app and not overwrite:
+                    print(f"⏭ App already exists: {existing_app}")
+                    result["app_url"] = existing_app
                 else:
-                    print(f"⚠ App creation returned {resp.status_code}: {resp.text[:500]}")
-                    print("  You can deploy manually with: databricks apps deploy northstar-route-optimization --source-code-path app/")
+                    if existing_app and overwrite:
+                        print(f"♻ Deleting existing app {APP_NAME}...")
+                        requests.delete(f"{workspace_url}/api/2.0/apps/{APP_NAME}", headers=deploy_headers)
+
+                    app_payload = {
+                        "name": APP_NAME,
+                        "description": "NorthStar Logistics 3PL Route Optimization Dashboard",
+                    }
+                    resp = requests.post(f"{workspace_url}/api/2.0/apps", headers=deploy_headers, json=app_payload)
+                    if resp.status_code in (200, 201):
+                        app_info = resp.json()
+                        app_url = app_info.get("url", f"{workspace_url}/apps/{APP_NAME}")
+                        result["app_url"] = app_url
+                        print(f"✓ App created: {app_info.get('name', APP_NAME)}")
+                        print(f"  URL: {app_url}")
+                    else:
+                        print(f"⚠ App creation returned {resp.status_code}: {resp.text[:500]}")
             except Exception as e:
                 print(f"⚠ App deployment failed: {e}")
-                print("  You can deploy manually with: databricks apps deploy northstar-route-optimization --source-code-path app/")
     else:
         print("⏭ Skipping app deployment (deploy_app=False)")
 
