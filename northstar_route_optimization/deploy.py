@@ -382,38 +382,38 @@ FROM accepted
     spark.sql(f"""
 CREATE OR REPLACE TABLE `{CATALOG}`.`{SCHEMA}`.route_plans AS
 SELECT
-  route_id,
-  route_date,
-  vehicle_id,
-  driver_id,
-  depot_id,
-  client_mix,
-  planned_stops,
-  planned_miles,
-  ROUND(planned_stops * (4.5 + (ABS(HASH(CONCAT(route_id, 'dur'))) % 30) / 10.0) + planned_miles * 1.2, 1) AS planned_duration_min,
-  ROUND(daily_fixed_cost_usd + planned_miles * cost_per_mile_usd + planned_stops * 3.50, 2) AS planned_cost_usd,
-  ROUND(planned_miles * (
-    CASE optimization_method
-      WHEN 'or_tools_cvrp' THEN 0.95 + (ABS(HASH(CONCAT(route_id, 'act_mi'))) % 15) / 100.0
-      WHEN 'greedy_nearest' THEN 1.0 + (ABS(HASH(CONCAT(route_id, 'act_mi'))) % 20) / 100.0
-      ELSE 1.05 + (ABS(HASH(CONCAT(route_id, 'act_mi'))) % 30) / 100.0
+  rp.route_id,
+  rp.route_date,
+  rp.vehicle_id,
+  rp.driver_id,
+  rp.depot_id,
+  rp.client_mix,
+  rp.planned_stops,
+  rp.planned_miles,
+  ROUND(rp.planned_stops * (4.5 + (ABS(HASH(CONCAT(rp.route_id, 'dur'))) % 30) / 10.0) + rp.planned_miles * 1.2, 1) AS planned_duration_min,
+  ROUND(v.daily_fixed_cost_usd + rp.planned_miles * v.cost_per_mile_usd + rp.planned_stops * 3.50, 2) AS planned_cost_usd,
+  ROUND(rp.planned_miles * (
+    CASE rp.optimization_method
+      WHEN 'or_tools_cvrp' THEN 0.95 + (ABS(HASH(CONCAT(rp.route_id, 'act_mi'))) % 15) / 100.0
+      WHEN 'greedy_nearest' THEN 1.0 + (ABS(HASH(CONCAT(rp.route_id, 'act_mi'))) % 20) / 100.0
+      ELSE 1.05 + (ABS(HASH(CONCAT(rp.route_id, 'act_mi'))) % 30) / 100.0
     END
   ), 1) AS actual_miles,
-  ROUND((planned_stops * (4.5 + (ABS(HASH(CONCAT(route_id, 'dur'))) % 30) / 10.0) + planned_miles * 1.2) * (
-    CASE optimization_method
-      WHEN 'or_tools_cvrp' THEN 0.92 + (ABS(HASH(CONCAT(route_id, 'act_dur'))) % 20) / 100.0
-      WHEN 'greedy_nearest' THEN 1.0 + (ABS(HASH(CONCAT(route_id, 'act_dur'))) % 25) / 100.0
-      ELSE 1.05 + (ABS(HASH(CONCAT(route_id, 'act_dur'))) % 35) / 100.0
+  ROUND((rp.planned_stops * (4.5 + (ABS(HASH(CONCAT(rp.route_id, 'dur'))) % 30) / 10.0) + rp.planned_miles * 1.2) * (
+    CASE rp.optimization_method
+      WHEN 'or_tools_cvrp' THEN 0.92 + (ABS(HASH(CONCAT(rp.route_id, 'act_dur'))) % 20) / 100.0
+      WHEN 'greedy_nearest' THEN 1.0 + (ABS(HASH(CONCAT(rp.route_id, 'act_dur'))) % 25) / 100.0
+      ELSE 1.05 + (ABS(HASH(CONCAT(rp.route_id, 'act_dur'))) % 35) / 100.0
     END
   ), 1) AS actual_duration_min,
-  ROUND((daily_fixed_cost_usd + planned_miles * cost_per_mile_usd + planned_stops * 3.50) * (
-    CASE optimization_method
-      WHEN 'or_tools_cvrp' THEN 0.90 + (ABS(HASH(CONCAT(route_id, 'act_cost'))) % 18) / 100.0
-      WHEN 'greedy_nearest' THEN 0.98 + (ABS(HASH(CONCAT(route_id, 'act_cost'))) % 20) / 100.0
-      ELSE 1.02 + (ABS(HASH(CONCAT(route_id, 'act_cost'))) % 30) / 100.0
+  ROUND((v.daily_fixed_cost_usd + rp.planned_miles * v.cost_per_mile_usd + rp.planned_stops * 3.50) * (
+    CASE rp.optimization_method
+      WHEN 'or_tools_cvrp' THEN 0.90 + (ABS(HASH(CONCAT(rp.route_id, 'act_cost'))) % 18) / 100.0
+      WHEN 'greedy_nearest' THEN 0.98 + (ABS(HASH(CONCAT(rp.route_id, 'act_cost'))) % 20) / 100.0
+      ELSE 1.02 + (ABS(HASH(CONCAT(rp.route_id, 'act_cost'))) % 30) / 100.0
     END
   ), 2) AS actual_cost_usd,
-  optimization_method
+  rp.optimization_method
 FROM `{CATALOG}`.`{SCHEMA}`.route_plans rp
 JOIN `{CATALOG}`.`{SCHEMA}`.vehicles v ON rp.vehicle_id = v.vehicle_id
 """)
