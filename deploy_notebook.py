@@ -366,7 +366,7 @@ SELECT
     WHEN 3 THEN 'CLIENT_A,CLIENT_C,CLIENT_D'
     ELSE 'CLIENT_A,CLIENT_B,CLIENT_C,CLIENT_D,CLIENT_E'
   END AS client_mix,
-  p_stops AS planned_stops,
+  CAST(p_stops AS INT) AS planned_stops,
   p_miles AS planned_miles,
   ROUND(p_stops * (4.5 + (ABS(HASH(CONCAT(CAST(rn AS STRING), 'dur'))) % 30) / 10.0) + p_miles * 1.2, 1) AS planned_duration_min,
   ROUND(daily_fixed_cost_usd + p_miles * cost_per_mile_usd + p_stops * 3.50, 2) AS planned_cost_usd,
@@ -417,7 +417,7 @@ WITH stop_expanded AS (
     rp.planned_stops,
     rp.planned_duration_min,
     rp.optimization_method,
-    EXPLODE(SEQUENCE(1, rp.planned_stops)) AS stop_seq
+    EXPLODE(SEQUENCE(1, CAST(rp.planned_stops AS INT))) AS stop_seq
   FROM `{CATALOG}`.`{SCHEMA}`.route_plans rp
 ),
 -- Assign each stop an order from the delivery_orders for that depot/date
