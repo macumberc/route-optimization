@@ -9,3 +9,4 @@ app/backend/static/assets/
 *.egg-info/
 dist/
 build/
+.databricks/

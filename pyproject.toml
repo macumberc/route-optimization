@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "northstar-route-optimization"
+version = "1.0.0"
+description = "NorthStar Logistics 3PL Route Optimization Demo for Databricks"
+readme = "README.md"
+requires-python = ">=3.9"
+license = {text = "MIT"}
+dependencies = ["requests"]
+
+[project.urls]
+Repository = "https://github.com/macumberc/route-optimization"
+
+[tool.setuptools.packages.find]
+include = ["northstar_route_optimization*"]

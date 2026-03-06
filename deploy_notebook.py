@@ -857,6 +857,22 @@ else:
 # COMMAND ----------
 
 # MAGIC %md
+# MAGIC ## Alternative: pip install
+# MAGIC You can also install this as a package and use it programmatically:
+# MAGIC ```python
+# MAGIC %pip install git+https://github.com/macumberc/route-optimization.git
+# MAGIC from northstar_route_optimization import deploy, cleanup
+# MAGIC 
+# MAGIC # Deploy
+# MAGIC result = deploy(spark, dbutils, warehouse_id="your_warehouse_id")
+# MAGIC 
+# MAGIC # Cleanup (when done)
+# MAGIC cleanup(spark, dbutils, catalog=result["catalog"], genie_space_id=result.get("genie_space_id"))
+# MAGIC ```
+
+# COMMAND ----------
+
+# MAGIC %md
 # MAGIC ## 10. Summary & Links
 
 # COMMAND ----------

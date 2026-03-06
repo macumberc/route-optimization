@@ -12,8 +12,9 @@ Built on Unity Catalog, AI/BI Genie, and Databricks Apps.
 2. [What's Included](#whats-included)
 3. [Architecture](#architecture)
 4. [Prerequisites](#prerequisites)
-5. [Quick Start (Tables Only) -- 5 Minutes](#quick-start-tables-only----5-minutes)
-6. [Full Setup (Tables + Genie + App) -- 10 Minutes](#full-setup-tables--genie--app----10-minutes)
+5. [Quick Start (pip install) -- 3 Minutes](#quick-start-pip-install----3-minutes)
+6. [Quick Start (Notebook) -- 5 Minutes](#quick-start-notebook----5-minutes)
+7. [Full Setup (Tables + Genie + App) -- 10 Minutes](#full-setup-tables--genie--app----10-minutes)
 7. [Data Model](#data-model)
 8. [Key Metrics](#key-metrics)
 9. [Genie Sample Questions](#genie-sample-questions)
@@ -119,16 +120,46 @@ Before deploying, confirm you have the following:
 
 ---
 
-## Quick Start (Tables Only) -- 5 Minutes
+## Quick Start (pip install) -- 3 Minutes
 
-Use this path if you only need the data tables for ad-hoc SQL analysis or to connect your own tools.
+The fastest way to deploy. In any Databricks notebook:
+
+```python
+%pip install git+https://github.com/macumberc/route-optimization.git
+```
+
+```python
+from northstar_route_optimization import deploy, cleanup
+
+# Deploy tables + Genie space (pass your warehouse ID to create the Genie room)
+result = deploy(spark, dbutils, warehouse_id="<your_warehouse_id>")
+
+# result contains: catalog, schema, tables, genie_space_id, genie_url
+print(result)
+```
+
+To tear everything down when you are done:
+
+```python
+from northstar_route_optimization import cleanup
+
+cleanup(spark, dbutils,
+        catalog=result["catalog"],
+        genie_space_id=result.get("genie_space_id"))
+```
+
+---
+
+## Quick Start (Notebook) -- 5 Minutes
+
+Use this path if you prefer running a notebook directly or want to customize the SQL.
 
 **Step 1: Clone the repo**
 
 In your Databricks workspace, navigate to **Workspace > Repos** (or **Workspace > Git folders**) and clone this repository:
 
 ```
-https://github.com/<your-org>/route-optimization.git
+https://github.com/macumberc/route-optimization.git
 ```
 
 **Step 2: Open the deployment notebook**
@@ -690,8 +721,12 @@ DEPOT_COORDS = {
 route-optimization/
 ├── README.md                           # This file
 ├── PROMPT_TEMPLATE.md                  # Original prompt template with scenario details
+├── pyproject.toml                      # Python package config (pip installable)
 ├── deploy_notebook.py                  # One-click Databricks deployment notebook
-├── create_genie_space.py               # Standalone Genie space creation script
+├── northstar_route_optimization/       # Python package
+│   ├── __init__.py                     # Exports deploy() and cleanup()
+│   ├── deploy.py                       # deploy() function — creates tables, Genie, app
+│   └── cleanup.py                      # cleanup() function — tears down all assets
 ├── app/
 │   ├── app.yaml                        # Databricks App configuration (env vars, resources)
 │   ├── backend/
