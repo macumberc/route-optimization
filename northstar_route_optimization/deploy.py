@@ -327,6 +327,39 @@ accepted AS (
   FROM filtered
   WHERE (ABS(HASH(CONCAT(CAST(rn AS STRING), 'rp_filter'))) % 1000) / 1000.0
         < usage_prob * dow_mult
+),
+with_stops_miles AS (
+  SELECT
+    *,
+    CASE
+      WHEN depot_id IN ('DEPOT_NYC', 'DEPOT_CHI', 'DEPOT_LAX') THEN
+        LEAST(max_stops_per_route, 8 + ABS(HASH(CONCAT(CAST(rn AS STRING), 'stops'))) % (max_stops_per_route - 5))
+      WHEN depot_id IN ('DEPOT_DEN', 'DEPOT_PHX', 'DEPOT_SEA') THEN
+        3 + ABS(HASH(CONCAT(CAST(rn AS STRING), 'stops'))) % GREATEST(1, max_stops_per_route / 2 - 2)
+      ELSE
+        5 + ABS(HASH(CONCAT(CAST(rn AS STRING), 'stops'))) % GREATEST(1, max_stops_per_route - 7)
+    END AS p_stops,
+    ROUND(
+      CASE
+        WHEN depot_id IN ('DEPOT_NYC', 'DEPOT_CHI', 'DEPOT_LAX') THEN
+          25 + (ABS(HASH(CONCAT(CAST(rn AS STRING), 'miles'))) % 40)
+        WHEN depot_id IN ('DEPOT_DEN', 'DEPOT_PHX') THEN
+          60 + (ABS(HASH(CONCAT(CAST(rn AS STRING), 'miles'))) % 90)
+        ELSE
+          35 + (ABS(HASH(CONCAT(CAST(rn AS STRING), 'miles'))) % 60)
+      END, 1
+    ) AS p_miles,
+    CASE ABS(HASH(CONCAT(CAST(rn AS STRING), 'opt'))) % 10
+      WHEN 0 THEN 'manual_dispatch'
+      WHEN 1 THEN 'manual_dispatch'
+      WHEN 2 THEN 'manual_dispatch'
+      WHEN 3 THEN 'or_tools_cvrp'
+      WHEN 4 THEN 'or_tools_cvrp'
+      WHEN 5 THEN 'or_tools_cvrp'
+      WHEN 6 THEN 'or_tools_cvrp'
+      ELSE 'greedy_nearest'
+    END AS opt_method
+  FROM accepted
 )
 SELECT
   CONCAT('RT-', LPAD(CAST(ROW_NUMBER() OVER (ORDER BY route_date, depot_id, vehicle_id) AS STRING), 5, '0')) AS route_id,
@@ -341,81 +374,33 @@ SELECT
     WHEN 3 THEN 'CLIENT_A,CLIENT_C,CLIENT_D'
     ELSE 'CLIENT_A,CLIENT_B,CLIENT_C,CLIENT_D,CLIENT_E'
   END AS client_mix,
-  -- Urban routes: more stops, fewer miles. Rural: fewer stops, more miles.
-  CASE
-    WHEN depot_id IN ('DEPOT_NYC', 'DEPOT_CHI', 'DEPOT_LAX') THEN
-      LEAST(max_stops_per_route, 8 + ABS(HASH(CONCAT(CAST(rn AS STRING), 'stops'))) % (max_stops_per_route - 5))
-    WHEN depot_id IN ('DEPOT_DEN', 'DEPOT_PHX', 'DEPOT_SEA') THEN
-      3 + ABS(HASH(CONCAT(CAST(rn AS STRING), 'stops'))) % GREATEST(1, max_stops_per_route / 2 - 2)
-    ELSE
-      5 + ABS(HASH(CONCAT(CAST(rn AS STRING), 'stops'))) % GREATEST(1, max_stops_per_route - 7)
-  END AS planned_stops,
-  ROUND(
-    CASE
-      WHEN depot_id IN ('DEPOT_NYC', 'DEPOT_CHI', 'DEPOT_LAX') THEN
-        25 + (ABS(HASH(CONCAT(CAST(rn AS STRING), 'miles'))) % 40)
-      WHEN depot_id IN ('DEPOT_DEN', 'DEPOT_PHX') THEN
-        60 + (ABS(HASH(CONCAT(CAST(rn AS STRING), 'miles'))) % 90)
-      ELSE
-        35 + (ABS(HASH(CONCAT(CAST(rn AS STRING), 'miles'))) % 60)
-    END, 1
-  ) AS planned_miles,
-  CAST(NULL AS DOUBLE) AS planned_duration_min_placeholder,
-  CAST(NULL AS DOUBLE) AS planned_cost_usd_placeholder,
-  CAST(NULL AS DOUBLE) AS actual_miles_placeholder,
-  CAST(NULL AS DOUBLE) AS actual_duration_min_placeholder,
-  CAST(NULL AS DOUBLE) AS actual_cost_usd_placeholder,
-  CASE ABS(HASH(CONCAT(CAST(rn AS STRING), 'opt'))) % 10
-    WHEN 0 THEN 'manual_dispatch'
-    WHEN 1 THEN 'manual_dispatch'
-    WHEN 2 THEN 'manual_dispatch'
-    WHEN 3 THEN 'or_tools_cvrp'
-    WHEN 4 THEN 'or_tools_cvrp'
-    WHEN 5 THEN 'or_tools_cvrp'
-    WHEN 6 THEN 'or_tools_cvrp'
-    ELSE 'greedy_nearest'
-  END AS optimization_method,
-  rn
-FROM accepted
-""")
-
-    spark.sql(f"""
-CREATE OR REPLACE TABLE `{CATALOG}`.`{SCHEMA}`.route_plans AS
-SELECT
-  rp.route_id,
-  rp.route_date,
-  rp.vehicle_id,
-  rp.driver_id,
-  rp.depot_id,
-  rp.client_mix,
-  rp.planned_stops,
-  rp.planned_miles,
-  ROUND(rp.planned_stops * (4.5 + (ABS(HASH(CONCAT(rp.route_id, 'dur'))) % 30) / 10.0) + rp.planned_miles * 1.2, 1) AS planned_duration_min,
-  ROUND(v.daily_fixed_cost_usd + rp.planned_miles * v.cost_per_mile_usd + rp.planned_stops * 3.50, 2) AS planned_cost_usd,
-  ROUND(rp.planned_miles * (
-    CASE rp.optimization_method
-      WHEN 'or_tools_cvrp' THEN 0.95 + (ABS(HASH(CONCAT(rp.route_id, 'act_mi'))) % 15) / 100.0
-      WHEN 'greedy_nearest' THEN 1.0 + (ABS(HASH(CONCAT(rp.route_id, 'act_mi'))) % 20) / 100.0
-      ELSE 1.05 + (ABS(HASH(CONCAT(rp.route_id, 'act_mi'))) % 30) / 100.0
+  p_stops AS planned_stops,
+  p_miles AS planned_miles,
+  ROUND(p_stops * (4.5 + (ABS(HASH(CONCAT(CAST(rn AS STRING), 'dur'))) % 30) / 10.0) + p_miles * 1.2, 1) AS planned_duration_min,
+  ROUND(daily_fixed_cost_usd + p_miles * cost_per_mile_usd + p_stops * 3.50, 2) AS planned_cost_usd,
+  ROUND(p_miles * (
+    CASE opt_method
+      WHEN 'or_tools_cvrp' THEN 0.95 + (ABS(HASH(CONCAT(CAST(rn AS STRING), 'act_mi'))) % 15) / 100.0
+      WHEN 'greedy_nearest' THEN 1.0 + (ABS(HASH(CONCAT(CAST(rn AS STRING), 'act_mi'))) % 20) / 100.0
+      ELSE 1.05 + (ABS(HASH(CONCAT(CAST(rn AS STRING), 'act_mi'))) % 30) / 100.0
     END
   ), 1) AS actual_miles,
-  ROUND((rp.planned_stops * (4.5 + (ABS(HASH(CONCAT(rp.route_id, 'dur'))) % 30) / 10.0) + rp.planned_miles * 1.2) * (
-    CASE rp.optimization_method
-      WHEN 'or_tools_cvrp' THEN 0.92 + (ABS(HASH(CONCAT(rp.route_id, 'act_dur'))) % 20) / 100.0
-      WHEN 'greedy_nearest' THEN 1.0 + (ABS(HASH(CONCAT(rp.route_id, 'act_dur'))) % 25) / 100.0
-      ELSE 1.05 + (ABS(HASH(CONCAT(rp.route_id, 'act_dur'))) % 35) / 100.0
+  ROUND((p_stops * (4.5 + (ABS(HASH(CONCAT(CAST(rn AS STRING), 'dur'))) % 30) / 10.0) + p_miles * 1.2) * (
+    CASE opt_method
+      WHEN 'or_tools_cvrp' THEN 0.92 + (ABS(HASH(CONCAT(CAST(rn AS STRING), 'act_dur'))) % 20) / 100.0
+      WHEN 'greedy_nearest' THEN 1.0 + (ABS(HASH(CONCAT(CAST(rn AS STRING), 'act_dur'))) % 25) / 100.0
+      ELSE 1.05 + (ABS(HASH(CONCAT(CAST(rn AS STRING), 'act_dur'))) % 35) / 100.0
     END
   ), 1) AS actual_duration_min,
-  ROUND((v.daily_fixed_cost_usd + rp.planned_miles * v.cost_per_mile_usd + rp.planned_stops * 3.50) * (
-    CASE rp.optimization_method
-      WHEN 'or_tools_cvrp' THEN 0.90 + (ABS(HASH(CONCAT(rp.route_id, 'act_cost'))) % 18) / 100.0
-      WHEN 'greedy_nearest' THEN 0.98 + (ABS(HASH(CONCAT(rp.route_id, 'act_cost'))) % 20) / 100.0
-      ELSE 1.02 + (ABS(HASH(CONCAT(rp.route_id, 'act_cost'))) % 30) / 100.0
+  ROUND((daily_fixed_cost_usd + p_miles * cost_per_mile_usd + p_stops * 3.50) * (
+    CASE opt_method
+      WHEN 'or_tools_cvrp' THEN 0.90 + (ABS(HASH(CONCAT(CAST(rn AS STRING), 'act_cost'))) % 18) / 100.0
+      WHEN 'greedy_nearest' THEN 0.98 + (ABS(HASH(CONCAT(CAST(rn AS STRING), 'act_cost'))) % 20) / 100.0
+      ELSE 1.02 + (ABS(HASH(CONCAT(CAST(rn AS STRING), 'act_cost'))) % 30) / 100.0
     END
   ), 2) AS actual_cost_usd,
-  rp.optimization_method
-FROM `{CATALOG}`.`{SCHEMA}`.route_plans rp
-JOIN `{CATALOG}`.`{SCHEMA}`.vehicles v ON rp.vehicle_id = v.vehicle_id
+  opt_method AS optimization_method
+FROM with_stops_miles
 """)
 
     cnt = spark.sql(f"SELECT COUNT(*) FROM `{CATALOG}`.`{SCHEMA}`.route_plans").first()[0]
