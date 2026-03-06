@@ -765,7 +765,7 @@ SELECT
                 "description": payload["description"],
             }
 
-            resp2 = requests.put(
+            resp2 = requests.patch(
                 f"{workspace_url}/api/2.0/genie/spaces/{genie_space_id}",
                 headers=headers,
                 json=update_payload,
