@@ -732,27 +732,27 @@ SELECT
                 "example_question_sqls": sorted([
                     {
                         "id": _gen_id("eq1"),
-                        "question": "Cost per delivery by depot",
+                        "question": ["Cost per delivery by depot"],
                         "sql": [f"SELECT depot_id, ROUND(AVG(actual_cost_usd / planned_stops), 2) AS avg_cost_per_delivery FROM {rp_table} GROUP BY depot_id ORDER BY avg_cost_per_delivery DESC"],
                     },
                     {
                         "id": _gen_id("eq2"),
-                        "question": "On-time rate trend by week",
+                        "question": ["On-time rate trend by week"],
                         "sql": [f"SELECT DATE_TRUNC('week', planned_arrival) AS week, ROUND(SUM(CASE WHEN delay_minutes = 0 THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 1) AS on_time_rate FROM {rs_table} WHERE status = 'completed' GROUP BY 1 ORDER BY 1"],
                     },
                     {
                         "id": _gen_id("eq3"),
-                        "question": "Delay reasons by region",
+                        "question": ["Delay reasons by region"],
                         "sql": [f"SELECT do.service_region, rs.delay_reason, COUNT(*) AS cnt FROM {rs_table} rs JOIN {rp_table} rp ON rs.route_id = rp.route_id JOIN {do_table} do ON rs.order_id = do.order_id WHERE rs.delay_reason IS NOT NULL GROUP BY 1, 2 ORDER BY cnt DESC"],
                     },
                     {
                         "id": _gen_id("eq4"),
-                        "question": "Vehicle type utilization",
+                        "question": ["Vehicle type utilization"],
                         "sql": [f"SELECT v.vehicle_type, COUNT(DISTINCT rp.route_id) AS routes, ROUND(AVG(rp.actual_miles),1) AS avg_miles FROM {v_table} v JOIN {rp_table} rp ON v.vehicle_id = rp.vehicle_id GROUP BY 1"],
                     },
                     {
                         "id": _gen_id("eq5"),
-                        "question": "Planned vs actual by optimization method",
+                        "question": ["Planned vs actual by optimization method"],
                         "sql": [f"SELECT optimization_method, ROUND(AVG(planned_miles),1) AS avg_planned, ROUND(AVG(actual_miles),1) AS avg_actual, ROUND(AVG(actual_cost_usd/planned_stops),2) AS cost_per_stop FROM {rp_table} GROUP BY 1 ORDER BY cost_per_stop"],
                     },
                 ], key=lambda x: x["id"]),
