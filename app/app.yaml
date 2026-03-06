@@ -1,0 +1,17 @@
+command:
+  - uvicorn
+  - backend.main:app
+  - --host
+  - 0.0.0.0
+  - --port
+  - "8000"
+env:
+  - name: CATALOG_NAME
+    value: northstar_route_optimization
+  - name: SCHEMA_NAME
+    value: demo
+resources:
+  - name: sql-warehouse
+    sql_warehouse:
+      id: "148ccb90800933a1"
+      permission: CAN_USE

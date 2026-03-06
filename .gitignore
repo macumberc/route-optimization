@@ -1,0 +1,11 @@
+node_modules/
+.venv/
+__pycache__/
+*.pyc
+.env
+.DS_Store
+app/frontend/node_modules/
+app/backend/static/assets/
+*.egg-info/
+dist/
+build/
